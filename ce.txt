@@ -1,0 +1,577 @@
+
+[base]
+name=base
+baseurl=http://server.group8.example.com/yum
+gpgcheck=0
+enable=1
+
+
+							8.smb服务
+1上：
+
+yum -y install samba samba-client
+firewall-cmd --add-service=samba --permanent
+                          --reload
+vim /etc/samba/smb.conf
+
+	workgroup = STAFF
+
+
+        [common]
+	comment = common share
+        path= /common
+        public = yes
+        browseable = yes
+        hosts allow = 172.24.8.
+        writable = no
+
+mkdir /common
+semanage fcontext -a -t "samba_share_t" '/common(/.*)?'				又一次忘记贴标签，总共两次了
+restorecon -Rv /common/
+ll -Zd /common/
+smbpasswd -a andy
+systemctl enable smb nmb
+systemctl restart smb nmb
+cp /etc/fstab /common
+
+
+
+2上：
+
+yum -y install samba-client
+smbclient  //172.24.8.11/common -U andy
+get fstab
+
+
+
+
+
+
+
+							9.smb服务
+
+
+1上：
+
+mkdir /devops
+vim /etc/samba/smb.conf
+
+        [devops]
+	comment = devops share
+        path= /devops
+        public = yes
+        browseable = yes
+        hosts allow = 172.24.8.
+        writable = no
+	write list = akira
+
+
+semanage fcontext -a -t "samba_share_t"  '/devops(/.*)?'
+restorecon -Rv /devops
+setfacl -m u:akira:rwx /devops					忘记设置akira的acl权限
+smbpasswd -a silene
+smbpasswd -a akira
+systemctl restart smb nmb
+
+
+2上：
+
+yum -y install cifs*							忘记下载cifs-utils这个包
+mkdir /mnt/dev
+vim /etc/fstab 
+
+//172.24.8.11/devops /mnt/dev cifs defaults,multiuser,username=silene,password=1,sec=ntlmssp 0 0 	忘记写multiuser多用户模式，把类型cifs写成了nfs，第二次忘记写下验证方式  sec=ntlmssp
+
+
+
+mount -a	
+df
+su - akira
+cd /mnt/dev
+cifscreds add 172.24.8.11
+
+su - silene 
+cd /mnt/dev
+cifscreds add 172.24.8.11
+
+如果还是无法创建文件，使用
+mount -o remount //system1/devops
+重新挂载一遍
+
+							
+
+
+
+
+
+
+							10.nfs服务
+
+
+yum -y install nfs-utils
+systemctl enable nfs-server nfs-secure
+firewall-cmd --add-service=rpc-bind 						忘记把服务加到防火墙中，第三次
+firewall-cmd --add-service=mountd 
+firewall-cmd --add-service=nfs
+firewall-cmd --reload
+mkdir /public /protected/project -pv
+chown andres /protected/project/
+semanage fcontext -a -t "public_content_t" '/public(/.*)?'
+semanage fcontext -a -t "public_content_t" '/protected(/.*)?'
+semanage fcontext -a -t "public_content_t" '/protected/project(/.*)?'
+restorecon -Rv /public/
+restorecon -Rv /protected/
+wget -O /etc/krb5.keytab http://server.group8.example.com/pub/keytabs/system1.keytab
+
+vim /etc/exports
+
+/protected 172.24.8.0/24(rw,sec=krb5p,sync)
+/public 172.24.8.0/24(ro,sec=sys,sync)
+
+
+
+vim /etc/sysconfig/nfs
+
+RPCNFSDARGS="-V 4.2"					忘记修改  /etc/sysconfig/nfs  的版本信息，实际上如果实验能成的话就没必要写上
+
+systemctl restart nfs-server nfs-secure
+
+
+							11.nfs服务
+
+2上：
+
+systemctl enable nfs-mountd.service nfs-secure.service
+systemctl restart nfs-secure nfs-mountd
+
+mkdir /mnt/nfs{mount,secure}
+wget -O /etc/krb5.keytab http://server.group8.example.com/pub/keytabs/system2.keytab
+
+vim /etc/fstab
+172.24.8.11:/public /mnt/nfsmount nfs defaults,sec=sys,_netdev 0 0
+172.24.8.11:/protected /mnt/nfssecure nfs defaults,sec=krb5p,_netdev,v4.2 0 0				实际上我们不写v4.2时也能出现我们需要的结果
+
+
+mount -a				
+
+
+
+注意，如果/protected挂载不上，fstab中的  v4.2  删除  再执行下面的操作！
+先
+systemctl restart nfs-mountd.service 
+如果不行，再
+yum remove nfs*
+yum search nfs
+yum -y install nfs-utils
+systemctl restart nfs-mountd.service
+
+
+
+
+如果切换后还是无法进入andres 查看修改文件，使用dmesg查看消息中的错误自己进行排错
+
+
+su - andres												后面的的步骤，总会有人忘记 
+klist
+kinit
+cd /mnt/nfssecure/project
+
+
+
+
+
+
+
+
+							12.httpd服务
+
+1上：
+
+yum -y install httpd 
+firewall-cmd --add-servic name=http 
+firewall-cmd --add-servic name=http --permanent
+firewall-cmd --add-servic name=https
+firewall-cmd --add-servic name=https --permanent
+systemctl enable httpd
+
+cp /usr/share/doc/httpd-2.4.6/httpd-vhosts.conf  /etc/httpd/conf.d
+
+vim  httpd-vhosts.conf  只需要 一个模板，删除留下上面那个
+
+
+<VirtualHost *:80>
+    DocumentRoot "/var/www/html"
+    ServerName http://system1.group8.example.com
+    <Directory "/var/www/html">				目录里面的路径忘记了很多次了
+        <RequireAll>
+                Require all granted			这个错误犯了两次，注意，大小写敏感，我把   all   写成   All  结果服务起不来
+                Require not host .my133t.org
+        </RequireAll>
+    </Directory>
+</VirtualHost>
+
+wget -O /var/www/html/index.html http://server.group8.example.com/pub/system1.html
+
+systemctl restart httpd
+curl http://system1.group8.example.com/
+
+
+
+
+							13.httpd服务
+yum -y install mod_ssl
+
+egrep -v "^$|^#"  /etc/httpd/conf.d/ssl.conf
+SSLEngine on
+SSLProtocol all -SSLv2
+SSLCipherSuite HIGH:MEDIUM:!aNULL:!MD5:!SEED:!IDEA
+SSLCertificateFile /etc/pki/tls/certs/localhost.crt
+SSLCertificateKeyFile /etc/pki/tls/private/localhost.key
+
+
+vim /etc/httpd/conf.d/httpd-vhosts.conf
+
+<VirtualHost *:443>
+    DocumentRoot "/var/www/html"
+    ServerName http://system1.group8.example.com
+    <Directory "/var/www/html">
+        <RequireAll>
+                Require all granted
+                Require not host .my133t.org
+        </RequireAll>
+    </Directory>
+        SSLEngine on
+        SSLProtocol all -SSLv2 -SSLv3
+        SSLCertificateFile /etc/pki/tls/certs/system1.crt
+        SSLCertificateKeyFile /etc/pki/tls/private/system1.key
+        SSLCACertificateFile /etc/pki/tls/certs/ssl-ca.crt
+</VirtualHost>
+
+
+
+wget -O /etc/pki/tls/certs/system1.crt http://server.group8.example.com/pub/tls/certs/system1.crt
+wget -O /etc/pki/tls/private/system1.key http://server.group8.example.com/pub/tls/private/system1.key
+wget -O /etc/pki/tls/certs/ssl-ca.crt http://server.group8.example.com/pub/tls/certs/ssl-ca.crt
+
+curl -k http://system1.group8.example.com/
+
+
+
+
+							14.配置虚拟主机
+
+1上:
+
+mkdir /var/www/virtual
+wget -O /var/www/html/index.html http://server.group8.example.com/pub/www8.html
+
+setfacl -m u:andy:rwx /var/www/virtual				这个错误犯了两次忘记写权限了
+
+
+vim /etc/httpd/conf.d/httpd-vhosts.conf 
+
+<VirtualHost *:80>
+        DocumentRoot "/var/www/virtual"
+        ServerName http://www8.group8.example.com/			域名忘记修改
+        <Directory "/var/www/virtual">
+                <RequireAll>
+                        Require all granted
+                </RequireAll>
+        </Directory>
+</VirtualHost>
+
+
+
+systemctl restart httpd
+curl http://www8.group8.example.com/
+
+
+
+
+
+
+
+
+
+
+							15.配置 web 内容的访问
+
+1上：
+
+mkdir /var/www/html/private/
+mkdir /var/www/virtual/private/
+
+wget -O /var/www/html/private/index.html  http://server.group8.example.com/pub/private.html
+wget -O /var/www/html/private/index.html  http://server.group8.example.com/pub/private.html
+
+vim /etc/httpd/conf.d/httpd-vhosts.conf
+
+
+在/var/www/html/那个目录下方再添加一个目录
+
+        <Directory "/var/www/html/private">
+                        Require all denied
+                        Require local
+        </Directory>
+
+
+
+
+在/var/www/virtual/那个目录下方再添加一个目录
+
+        <Directory "/var/www/virtual/private">
+                        Require all denied
+                        Require local
+        </Directory>
+
+
+
+systemctl restart httpd
+
+
+
+
+							16题这个题目没理解，不会做
+
+							16.实现动态WEB内容
+
+vim /etc/httpd/conf.d/httpd-vhosts.conf
+
+
+<VirtualHost *:8909>
+        ServerName wsgi.group8.example.com			内容还是记不住
+        WSGIScriptAlias / /var/www/html/webinfo.wsgi
+</VirtualHost>
+
+
+
+
+yum -y install mod_wsgi
+wget -O /var/www/html/webinfo.wsgi http://server.group8.example.com/pub/webinfo.wsgi
+firewall-cmd --add-rich-rule 'rule family=ipv4 port port=8909 protocol=tcp accept'				
+firewall-cmd --add-rich-rule 'rule family=ipv4 port port=8909 protocol=tcp accept' --permanent
+firewall-cmd --reload  											这条命令总是会忘记
+firewall-cmd --list-all 	
+semanage port -a -t http_port_t -p tcp 8909								忘记写tcp，忘记内容，对端口做标签的的命令总是忘记   -p  参数也是，忘记下发端口第三次
+
+
+
+							
+
+
+							17
+
+
+#!/bin/bash
+case $1 in
+        redhat)
+                echo fedora 
+                ;;
+        fedora)
+                echo redhat
+                ;;
+             *)
+                echo '/root/foo.sh redhat | fedora' 1>&2
+                exit 1
+                ;;
+esac
+
+
+
+							18.创建用户
+
+
+
+#!/bin/bash
+if [ $# -eq 0 ];then
+        echo 'Usage: /root/batchusers userfile'
+        exit 1
+else
+        if [ ! -e $1 ];then
+                echo 'Input file not found'
+                exit 2
+        else
+                while read i ;do
+                        useradd -s /bin/false $i
+                done<$1
+        fi
+fi
+
+
+
+
+#!/bin/bash
+if [ $# -eq 0 ];then
+        echo "Usage: /root/batchusers userfile" 1>&2
+        exit 1
+fi
+if [ ! -e $1 ] ;then							判断文件是否存在这里还是有些不足，可以   help  test 进行查看 
+        echo "Input file not found" 1>&2
+        exit 2
+fi
+
+while read i ;do
+        useradd -s /bin/false $i
+done<$1
+
+
+
+
+
+
+
+
+
+							这个实验都不熟悉
+
+							19.配置ISCSI服务端
+
+1上：
+
+
+yum -y install targetcli
+firewall-cmd --add-rich-rule 'rule family=ipv4 source address=172.24.8.12/32  port port=3260 protocol=tcp accept'			
+firewall-cmd --add-rich-rule 'rule family=ipv4 source address=172.24.8.12/32  port port=3260 protocol=tcp accept' --permanent		这条命令写成了172.24.8.11的端口
+firewall-cmd --reload																所有和这条命令有关的总是忘记
+
+fdisk /dev/sda
+n
+p
+3
++3G
+t
+3
+8e
+p
+w
+
+
+partprobe
+pvcreate /dev/sda3
+vgcreate iscsi_vg /dev/sda3
+lvcreate -n iscsi_store -l 100%FREE iscsi_vg
+
+
+
+targetcli
+
+backstores/block create name=iscsi_store dev=/dev/iscsi_vg/iscsi_store
+
+cd iscsi
+
+	create iqn.2014-08.com.example.group8:system1
+
+cd iqn.2014-08.com.example.group8:system1/tpg1/luns 
+
+	create /backstores/block/iscsi_store
+
+cd ../acls/ 
+	
+	create iqn.2014-08.com.example.group8:system2
+
+cd ../portals/ 
+	
+	create 172.24.8.11:3260
+
+set attribute authentication=0
+
+set attribute generate_node_acls=0
+
+cd /
+
+saveconfig
+exit
+
+
+							整个过程都不熟悉
+							20.配置ISCSI客户端
+
+
+2上:
+
+yum search iscsi
+yum -y install iscsi-initiator-utils				包没下对，导致服务起不来
+
+
+vim /etc/iscsi/initiatorname.iscsi				这个文件记不住
+
+InitiatorName=iqn.2014-08.com.example.group8:system2
+
+systemctl enable iscsi iscsid
+systemctl start iscsi iscsid
+
+iscsiadm -m discovery -t st -p 172.24.8.11
+iscsiadm -m node -l
+
+lsblk
+
+
+fdisk /dev/sdb
+n
+p
++2100M
+w
+partprobe
+mkfs.ext4 /dev/sdb1
+mkdir /mnt/data
+vim /etc/fstab
+
+/dev/sdb1(写成UUID) /mnt/data ext4 defaults,_netdev 0 0
+
+
+
+vim /etc/rc.d/rc.local
+
+iscsiadc -m node -T iqn.2014-08.com.example.group8:system1 -p 172.24.8.11 -l
+								
+while df|grep "protected";do
+	partprobe
+        systemctl restart nfs-mountd.service
+        mount -a
+done
+
+
+
+
+
+								21.配置一个数据库
+
+
+
+
+yum -y install mariadb*
+systemctl enable mariadb
+systemctl start mariadb
+
+
+mysql_secure_installation
+
+是否设置root密码（确定）
+密码
+密码
+是否删除匿名用户（确定）
+其他都回车
+
+
+
+
+wget -O /root/user.mdb http://server.group8.example.com/pub/users.mdb
+
+
+
+								21.查询
+mysql -uroot -predhat
+
+create database Contacts;
+use  Contacts
+source /root/user.mdb
+grant select on contacts.* to Mary@localhost identified by 'redhat';
+select u_name.firstname from u_name,u_passwd  where u_name.userid = u_passwd.password = 'fadora' ;
+select count(*) from u_name,u_loc where u_name.userid = u_loc.uid and u_name.firstname = 'John' and u_loc.location = 'Santa Clara';
+
+
+
+
+
+
+
